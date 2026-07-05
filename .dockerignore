@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.env
+uploads/
+alembic/versions/__pycache__/
