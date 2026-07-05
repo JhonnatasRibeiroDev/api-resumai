@@ -8,6 +8,13 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.config import Settings
 from app.documents.models import Document
 from app.documents.schemas import DocumentRead, DocumentUploadRead
+from app.summaries.constants import (
+    ACTIVE_JOB_STATUSES,
+    JOB_KIND_INDIVIDUAL,
+    JOB_STATUS_COMPLETED,
+    JOB_STATUS_FAILED,
+)
+from app.summaries.models import SummaryJob
 from app.users.models import User
 from app.utils.pdf import PDFExtractionError, extract_text_from_pdf
 
@@ -16,19 +23,40 @@ ACCEPTED_PDF_MIME_TYPES = {"application/pdf", "application/x-pdf"}
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
-def document_to_read(document: Document) -> DocumentRead:
+def document_to_read(document: Document, summary_status: str | None = None) -> DocumentRead:
     return DocumentRead(
         id=document.id,
         filename=document.filename,
         file_size=document.file_size,
         mime_type=document.mime_type,
         created_at=document.created_at,
-        summary_status="completed" if document.summary else "pending",
+        summary_status=summary_status or ("completed" if document.summary else "pending"),
     )
 
 
 def document_to_upload_read(document: Document) -> DocumentUploadRead:
     return DocumentUploadRead(**document_to_read(document).model_dump())
+
+
+def get_document_summary_status(db: Session, document: Document) -> str:
+    if document.summary:
+        return "completed"
+
+    latest_job = db.scalar(
+        select(SummaryJob)
+        .where(
+            SummaryJob.document_id == document.id,
+            SummaryJob.kind == JOB_KIND_INDIVIDUAL,
+        )
+        .order_by(SummaryJob.created_at.desc())
+    )
+    if latest_job and latest_job.status in (
+        *ACTIVE_JOB_STATUSES,
+        JOB_STATUS_COMPLETED,
+        JOB_STATUS_FAILED,
+    ):
+        return latest_job.status
+    return "pending"
 
 
 def _validate_pdf_metadata(file: UploadFile) -> str:

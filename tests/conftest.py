@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +12,8 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.llm.client import get_llm_client
 from app.main import app
+from app.summaries import service as summaries_service
+from app.summaries.processor import process_summary_job
 
 
 class FakeLLMClient:
@@ -19,7 +22,7 @@ class FakeLLMClient:
 
 
 @pytest.fixture()
-def client(tmp_path) -> Generator[TestClient, None, None]:
+def test_context(tmp_path) -> Generator[dict[str, Any], None, None]:
     engine = create_engine(
         "sqlite+pysqlite://",
         connect_args={"check_same_thread": False},
@@ -38,7 +41,25 @@ def client(tmp_path) -> Generator[TestClient, None, None]:
         upload_dir=str(tmp_path / "uploads"),
         gemini_api_key="test-key",
         gemini_model="fake-gemini",
+        enqueue_summary_jobs=True,
+        summary_chunk_chars=120,
+        summary_chunk_overlap_chars=10,
+        summary_max_chunks=4,
+        user_max_active_summary_jobs=2,
     )
+
+    yield {"session_local": testing_session_local, "settings": test_settings}
+
+    Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture()
+def client(
+    test_context: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[TestClient, None, None]:
+    testing_session_local = test_context["session_local"]
+    test_settings = test_context["settings"]
 
     def override_get_db() -> Generator[Session, None, None]:
         db = testing_session_local()
@@ -51,8 +72,16 @@ def client(tmp_path) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_settings] = lambda: test_settings
     app.dependency_overrides[get_llm_client] = lambda: FakeLLMClient()
 
+    def immediate_enqueue(job, settings) -> None:
+        db = testing_session_local()
+        try:
+            process_summary_job(db, job.id, settings, FakeLLMClient())
+        finally:
+            db.close()
+
+    monkeypatch.setattr(summaries_service, "_enqueue_job", immediate_enqueue)
+
     with TestClient(app) as test_client:
         yield test_client
 
     app.dependency_overrides.clear()
-    Base.metadata.drop_all(bind=engine)

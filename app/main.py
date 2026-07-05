@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import app.db.base  # noqa: F401  # garante que todos os modelos ORM (incl. User) estejam registrados
 from app.auth.routes import router as auth_router
 from app.core.config import get_settings
 from app.dashboard.routes import router as dashboard_router

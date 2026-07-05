@@ -19,9 +19,16 @@ class Settings(BaseSettings):
     upload_dir: str = "/app/uploads"
     max_upload_size_mb: int = 50
     max_llm_chars: int = 30_000
+    summary_chunk_chars: int = 12_000
+    summary_chunk_overlap_chars: int = 500
+    summary_max_chunks: int = 20
+    user_max_active_summary_jobs: int = 2
+    summary_max_attempts: int = 3
 
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.0-flash"
+    celery_broker_url: str = "amqp://resumai:resumai_password@rabbitmq:5672//"
+    enqueue_summary_jobs: bool = True
 
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost"]
 

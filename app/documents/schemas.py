@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 
-SummaryStatus = Literal["pending", "completed"]
+SummaryStatus = Literal["pending", "processing", "completed", "failed"]
 
 
 class DocumentRead(BaseModel):

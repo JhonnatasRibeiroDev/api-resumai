@@ -67,3 +67,46 @@ class IntegratedSummary(Base):
     )
 
     user: Mapped[User] = relationship("User", back_populates="integrated_summaries")
+
+
+class SummaryJob(Base):
+    __tablename__ = "summary_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    document_ids: Mapped[list[Any] | None] = mapped_column(document_ids_type)
+    title: Mapped[str | None] = mapped_column(String(255))
+    summary_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("summaries.id", ondelete="SET NULL"),
+    )
+    integrated_summary_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("integrated_summaries.id", ondelete="SET NULL"),
+    )
+    error_message: Mapped[str | None] = mapped_column(Text)
+    attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=utc_now
+    )
+
+    user: Mapped[User] = relationship("User")
+    summary: Mapped[Summary | None] = relationship("Summary")
+    integrated_summary: Mapped[IntegratedSummary | None] = relationship("IntegratedSummary")

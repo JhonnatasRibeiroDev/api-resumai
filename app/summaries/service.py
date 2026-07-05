@@ -1,62 +1,28 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.documents.models import Document
 from app.documents.service import get_user_document
-from app.llm.client import LLMClient, LLMError
-from app.llm.prompts import (
-    build_individual_summary_prompt,
-    build_integrated_summary_prompt,
-    truncate_text,
+from app.summaries.constants import (
+    ACTIVE_JOB_STATUSES,
+    JOB_KIND_INDIVIDUAL,
+    JOB_KIND_INTEGRATED,
+    JOB_STATUS_COMPLETED,
+    JOB_STATUS_FAILED,
+    JOB_STATUS_PENDING,
 )
-from app.summaries.models import IntegratedSummary, Summary
+from app.summaries.models import IntegratedSummary, Summary, SummaryJob
 from app.summaries.schemas import IntegratedSummaryCreate
 from app.users.models import User
 
 
-def _generate_or_502(llm_client: LLMClient, prompt: str) -> str:
-    try:
-        return llm_client.generate(prompt)
-    except LLMError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-
-
-def summarize_document(
-    db: Session,
-    user: User,
-    document_id: UUID,
-    llm_client: LLMClient,
-    settings: Settings,
-) -> Summary:
-    document = get_user_document(db, user, document_id)
-    if document.summary:
-        return document.summary
-
-    text_to_summarize, source_truncated = truncate_text(
-        document.extracted_text,
-        settings.max_llm_chars,
-    )
-    prompt = build_individual_summary_prompt(text_to_summarize)
-    content = _generate_or_502(llm_client, prompt)
-
-    summary = Summary(
-        user_id=user.id,
-        document_id=document.id,
-        content=content,
-        model_name=settings.gemini_model,
-        source_truncated=source_truncated,
-    )
-    db.add(summary)
-    db.commit()
-    db.refresh(summary)
-    return summary
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def get_document_summary(db: Session, user: User, document_id: UUID) -> Summary:
@@ -75,13 +41,121 @@ def get_document_summary(db: Session, user: User, document_id: UUID) -> Summary:
     return summary
 
 
-def create_integrated_summary(
+def _active_user_job_count(db: Session, user: User) -> int:
+    return (
+        db.scalar(
+            select(func.count())
+            .select_from(SummaryJob)
+            .where(
+                SummaryJob.user_id == user.id,
+                SummaryJob.status.in_(ACTIVE_JOB_STATUSES),
+            )
+        )
+        or 0
+    )
+
+
+def _ensure_user_can_create_job(db: Session, user: User, settings: Settings) -> None:
+    if _active_user_job_count(db, user) >= settings.user_max_active_summary_jobs:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Limite de resumos em processamento atingido. Aguarde um job finalizar.",
+        )
+
+
+def _enqueue_job(job: SummaryJob, settings: Settings) -> None:
+    if not settings.enqueue_summary_jobs:
+        return
+    try:
+        from app.worker.tasks import process_summary_job_task
+
+        process_summary_job_task.delay(str(job.id))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Não foi possível enviar o job para a fila RabbitMQ.",
+        ) from exc
+
+
+def _completed_individual_job_for_summary(
+    db: Session,
+    user: User,
+    document: Document,
+    summary: Summary,
+) -> SummaryJob:
+    existing_job = db.scalar(
+        select(SummaryJob)
+        .where(
+            SummaryJob.user_id == user.id,
+            SummaryJob.kind == JOB_KIND_INDIVIDUAL,
+            SummaryJob.document_id == document.id,
+            SummaryJob.status == JOB_STATUS_COMPLETED,
+        )
+        .order_by(SummaryJob.created_at.desc())
+    )
+    if existing_job:
+        return existing_job
+
+    job = SummaryJob(
+        user_id=user.id,
+        kind=JOB_KIND_INDIVIDUAL,
+        status=JOB_STATUS_COMPLETED,
+        document_id=document.id,
+        summary_id=summary.id,
+        attempt_count=1,
+        started_at=summary.created_at,
+        finished_at=summary.created_at,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def create_document_summary_job(
+    db: Session,
+    user: User,
+    document_id: UUID,
+    settings: Settings,
+) -> SummaryJob:
+    document = get_user_document(db, user, document_id)
+    if document.summary:
+        return _completed_individual_job_for_summary(db, user, document, document.summary)
+
+    active_job = db.scalar(
+        select(SummaryJob)
+        .where(
+            SummaryJob.user_id == user.id,
+            SummaryJob.kind == JOB_KIND_INDIVIDUAL,
+            SummaryJob.document_id == document.id,
+            SummaryJob.status.in_(ACTIVE_JOB_STATUSES),
+        )
+        .order_by(SummaryJob.created_at.desc())
+    )
+    if active_job:
+        return active_job
+
+    _ensure_user_can_create_job(db, user, settings)
+
+    job = SummaryJob(
+        user_id=user.id,
+        kind=JOB_KIND_INDIVIDUAL,
+        status=JOB_STATUS_PENDING,
+        document_id=document.id,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    _enqueue_job(job, settings)
+    return job
+
+
+def create_integrated_summary_job(
     db: Session,
     user: User,
     payload: IntegratedSummaryCreate,
-    llm_client: LLMClient,
     settings: Settings,
-) -> IntegratedSummary:
+) -> SummaryJob:
     requested_ids = payload.document_ids
     if len(set(requested_ids)) != len(requested_ids):
         raise HTTPException(
@@ -103,40 +177,79 @@ def create_integrated_summary(
             detail="Um ou mais documentos não foram encontrados.",
         )
 
-    documents_by_id = {document.id: document for document in documents}
-    ordered_documents = [documents_by_id[document_id] for document_id in requested_ids]
-
-    content_parts = []
-    for index, document in enumerate(ordered_documents, start=1):
-        if not document.extracted_text:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"O documento {document.filename} não possui texto extraído.",
+    requested_key = [str(document_id) for document_id in requested_ids]
+    active_jobs = list(
+        db.scalars(
+            select(SummaryJob).where(
+                SummaryJob.user_id == user.id,
+                SummaryJob.kind == JOB_KIND_INTEGRATED,
+                SummaryJob.status.in_(ACTIVE_JOB_STATUSES),
             )
-        content_parts.append(
-            f"Documento {index}: {document.filename}\n\n{document.extracted_text}"
         )
-
-    combined_content = "\n\n---\n\n".join(content_parts)
-    text_to_summarize, source_truncated = truncate_text(
-        combined_content,
-        settings.max_llm_chars,
     )
-    prompt = build_integrated_summary_prompt(text_to_summarize)
-    content = _generate_or_502(llm_client, prompt)
+    for job in active_jobs:
+        if job.document_ids == requested_key and job.title == payload.title:
+            return job
 
-    integrated_summary = IntegratedSummary(
+    _ensure_user_can_create_job(db, user, settings)
+
+    job = SummaryJob(
         user_id=user.id,
+        kind=JOB_KIND_INTEGRATED,
+        status=JOB_STATUS_PENDING,
+        document_ids=requested_key,
         title=payload.title,
-        document_ids=[str(document_id) for document_id in requested_ids],
-        content=content,
-        model_name=settings.gemini_model,
-        source_truncated=source_truncated,
     )
-    db.add(integrated_summary)
+    db.add(job)
     db.commit()
-    db.refresh(integrated_summary)
-    return integrated_summary
+    db.refresh(job)
+    _enqueue_job(job, settings)
+    return job
+
+
+def get_summary_job(db: Session, user: User, job_id: UUID) -> SummaryJob:
+    job = db.scalar(
+        select(SummaryJob).where(
+            SummaryJob.id == job_id,
+            SummaryJob.user_id == user.id,
+        )
+    )
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job de resumo não encontrado.",
+        )
+    return job
+
+
+def retry_summary_job(
+    db: Session,
+    user: User,
+    job_id: UUID,
+    settings: Settings,
+) -> SummaryJob:
+    job = get_summary_job(db, user, job_id)
+    if job.status != JOB_STATUS_FAILED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Apenas jobs com falha podem ser tentados novamente.",
+        )
+    if job.attempt_count >= settings.summary_max_attempts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Limite de tentativas atingido para este job.",
+        )
+    _ensure_user_can_create_job(db, user, settings)
+
+    job.status = JOB_STATUS_PENDING
+    job.error_message = None
+    job.started_at = None
+    job.finished_at = None
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    _enqueue_job(job, settings)
+    return job
 
 
 def list_integrated_summaries(db: Session, user: User) -> list[IntegratedSummary]:

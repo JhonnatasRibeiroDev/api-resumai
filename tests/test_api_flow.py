@@ -74,16 +74,24 @@ def test_full_api_flow(client: TestClient) -> None:
         f"/api/v1/documents/{first_document_id}/summarize",
         headers=headers,
     )
-    assert summary_response.status_code == 201
-    summary_body = summary_response.json()
-    assert summary_body["document_id"] == first_document_id
-    assert "Resumo fake" in summary_body["content"]
+    assert summary_response.status_code == 202
+    summary_job = summary_response.json()
+    assert summary_job["kind"] == "individual"
+    assert summary_job["document_id"] == first_document_id
+
+    summary_job_response = client.get(
+        f"/api/v1/summary-jobs/{summary_job['id']}",
+        headers=headers,
+    )
+    assert summary_job_response.status_code == 200
+    assert summary_job_response.json()["status"] == "completed"
 
     get_summary_response = client.get(
         f"/api/v1/documents/{first_document_id}/summary",
         headers=headers,
     )
     assert get_summary_response.status_code == 200
+    assert "Resumo fake" in get_summary_response.json()["content"]
 
     integrated_response = client.post(
         "/api/v1/summaries/integrated",
@@ -93,8 +101,26 @@ def test_full_api_flow(client: TestClient) -> None:
             "document_ids": [first_document_id, second_document_id],
         },
     )
-    assert integrated_response.status_code == 201
-    assert integrated_response.json()["title"] == "Síntese geral"
+    assert integrated_response.status_code == 202
+    integrated_job = integrated_response.json()
+    assert integrated_job["kind"] == "integrated"
+    assert integrated_job["title"] == "Síntese geral"
+
+    integrated_job_response = client.get(
+        f"/api/v1/summary-jobs/{integrated_job['id']}",
+        headers=headers,
+    )
+    assert integrated_job_response.status_code == 200
+    integrated_job_body = integrated_job_response.json()
+    assert integrated_job_body["status"] == "completed"
+    assert integrated_job_body["integrated_summary_id"] is not None
+
+    integrated_summary_response = client.get(
+        f"/api/v1/summaries/integrated/{integrated_job_body['integrated_summary_id']}",
+        headers=headers,
+    )
+    assert integrated_summary_response.status_code == 200
+    assert integrated_summary_response.json()["title"] == "Síntese geral"
 
     dashboard_response = client.get("/api/v1/dashboard", headers=headers)
     assert dashboard_response.status_code == 200
@@ -114,6 +140,59 @@ def test_rejects_non_pdf_upload(client: TestClient) -> None:
     )
 
     assert response.status_code == 415
+
+
+def test_prevents_duplicate_active_summary_job(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    from app.summaries import service as summaries_service
+
+    monkeypatch.setattr(summaries_service, "_enqueue_job", lambda job, settings: None)
+    headers = auth_headers(client)
+    document_id = upload_pdf(client, headers, "pendente.pdf", "Texto para resumo.")
+
+    first_response = client.post(
+        f"/api/v1/documents/{document_id}/summarize",
+        headers=headers,
+    )
+    second_response = client.post(
+        f"/api/v1/documents/{document_id}/summarize",
+        headers=headers,
+    )
+
+    assert first_response.status_code == 202
+    assert second_response.status_code == 202
+    assert second_response.json()["id"] == first_response.json()["id"]
+    assert second_response.json()["status"] == "pending"
+
+
+def test_limits_active_summary_jobs(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    from app.summaries import service as summaries_service
+
+    monkeypatch.setattr(summaries_service, "_enqueue_job", lambda job, settings: None)
+    headers = auth_headers(client)
+    document_ids = [
+        upload_pdf(client, headers, f"doc-{index}.pdf", f"Texto {index}")
+        for index in range(3)
+    ]
+
+    for document_id in document_ids[:2]:
+        response = client.post(
+            f"/api/v1/documents/{document_id}/summarize",
+            headers=headers,
+        )
+        assert response.status_code == 202
+
+    blocked_response = client.post(
+        f"/api/v1/documents/{document_ids[2]}/summarize",
+        headers=headers,
+    )
+
+    assert blocked_response.status_code == 429
 
 
 def test_openapi_uses_bearer_authorization(client: TestClient) -> None:

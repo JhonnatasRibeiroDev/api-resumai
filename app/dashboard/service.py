@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.dashboard.schemas import DashboardRead
 from app.documents.models import Document
-from app.documents.service import document_to_read
+from app.documents.service import document_to_read, get_document_summary_status
 from app.summaries.models import IntegratedSummary, Summary
 from app.users.models import User
 
@@ -51,7 +51,10 @@ def get_dashboard(db: Session, user: User) -> DashboardRead:
         total_documents=total_documents or 0,
         total_individual_summaries=total_individual_summaries or 0,
         total_integrated_summaries=total_integrated_summaries or 0,
-        latest_documents=[document_to_read(document) for document in latest_documents],
+        latest_documents=[
+            document_to_read(document, get_document_summary_status(db, document))
+            for document in latest_documents
+        ],
         latest_summaries=latest_summaries,
         latest_integrated_summaries=latest_integrated_summaries,
     )
