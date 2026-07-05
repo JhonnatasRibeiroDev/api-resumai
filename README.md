@@ -12,6 +12,14 @@ docker compose up --build
 
 A API ficará disponível em `http://localhost:8000`.
 
+Documentação:
+
+- Swagger UI: `http://localhost:8000/api/v1/docs`
+- OpenAPI JSON: `http://localhost:8000/api/v1/openapi.json`
+- ReDoc: `http://localhost:8000/api/v1/redoc`
+
+No botão `Authorize` do Swagger, cole o `access_token` retornado por `POST /api/v1/auth/login`. Não inclua o prefixo `Bearer`; o Swagger adiciona isso sozinho.
+
 ## Variáveis
 
 Use `api-resumai/.env.example` como referência. Para gerar resumos reais, defina:

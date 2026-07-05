@@ -26,3 +26,4 @@ def login(
     user = authenticate_user(db, payload.identifier, payload.password)
     access_token = create_access_token(str(user.id), settings)
     return Token(access_token=access_token)
+

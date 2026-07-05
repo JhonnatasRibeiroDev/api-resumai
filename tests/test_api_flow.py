@@ -114,3 +114,12 @@ def test_rejects_non_pdf_upload(client: TestClient) -> None:
     )
 
     assert response.status_code == 415
+
+
+def test_openapi_uses_bearer_authorization(client: TestClient) -> None:
+    response = client.get("/api/v1/openapi.json")
+
+    assert response.status_code == 200
+    security_scheme = response.json()["components"]["securitySchemes"]["JWT Bearer"]
+    assert security_scheme["type"] == "http"
+    assert security_scheme["scheme"] == "bearer"
