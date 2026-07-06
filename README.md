@@ -219,7 +219,7 @@ quiser resumos reais.
 | `JWT_SECRET` | `change_this_secret` | Segredo usado para assinar os JWT — **troque em produção** |
 | `JWT_ALGORITHM` | `HS256` | Algoritmo de assinatura do JWT |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Validade do token de acesso |
-| `UPLOAD_DIR` | `/app/uploads` | Diretório onde os PDFs enviados são salvos |
+| `UPLOAD_DIR` | `./uploads` | Diretório onde os PDFs enviados são salvos |
 | `MAX_UPLOAD_SIZE_MB` | `50` | Tamanho máximo de upload permitido |
 | `MAX_LLM_CHARS` | `30000` | Limite de caracteres enviados por chamada à LLM |
 | `SUMMARY_CHUNK_CHARS` | `12000` | Tamanho de cada chunk quando o texto é dividido |

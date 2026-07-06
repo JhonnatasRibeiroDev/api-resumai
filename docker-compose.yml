@@ -56,7 +56,7 @@ services:
       uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     volumes:
       - .:/app
-      - ./uploads:/app/uploads
+      - uploads_data:/app/uploads
     ports:
       - "8000:8000"
     depends_on:
@@ -99,7 +99,7 @@ services:
       --concurrency=2
     volumes:
       - .:/app
-      - ./uploads:/app/uploads
+      - uploads_data:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,6 +110,7 @@ services:
 
 volumes:
   postgres_data:
+  uploads_data:
 
 networks:
   resumai_network:
