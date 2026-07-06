@@ -1,5 +1,8 @@
 # ResumAi API
 
+<img width="1854" height="1187" alt="page_home" src="https://github.com/user-attachments/assets/4b2cfcaf-3e9f-47bc-b087-03e873436e82" />
+
+
 API backend do **ResumAi**: recebe PDFs, extrai o texto, gera resumos com o
 Gemini e processa tudo de forma **assíncrona** usando Celery + RabbitMQ. Também
 gera "resumos integrados" combinando o conteúdo de vários documentos em um só.
